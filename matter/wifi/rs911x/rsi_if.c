@@ -398,7 +398,7 @@ void wfx_rsi_task(void *arg)
       WFX_RSI_LOG("%s: disconnect notify", __func__);
       /* TODO: Implement disconnect notify */
 #ifndef RS911X_SOCKETS
-      wfx_lwip_set_sta_link_down();
+      wfx_lwip_set_sta_link_down(); // Internally dhcpclient_poll(netif) -> wfx_ip_changed_notify(0) for IPV4
 #if (CHIP_DEVICE_CONFIG_ENABLE_IPV4)
       wfx_ip_changed_notify(0);
       hasNotifiedIPV4 = false;

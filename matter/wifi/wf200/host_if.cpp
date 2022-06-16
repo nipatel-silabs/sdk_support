@@ -91,8 +91,12 @@ uint8_t softap_channel                 = SOFTAP_CHANNEL_DEFAULT;
 #endif
 
 /* station network interface structures */
-struct netif sta_netif;
+struct netif *sta_netif;
 wfx_wifi_provision_t wifi_provision;
+
+bool hasNotifiedIPV6 = false;
+bool hasNotifiedIPV4 = false;
+bool hasNotifiedWifiConnectivity = false;
 
 #ifdef SL_WFX_CONFIG_SCAN
 static struct scan_result_holder {
@@ -152,13 +156,11 @@ sl_status_t sl_wfx_host_process_event(sl_wfx_generic_message_t *event_payload)
     case SL_WFX_CONNECT_IND_ID: {
       sl_wfx_connect_ind_t *connect_indication = (sl_wfx_connect_ind_t *)event_payload;
       sl_wfx_connect_callback(connect_indication->body.mac, connect_indication->body.status);
-      PlatformMgrImpl().HandleWFXSystemEvent(WIFI_EVENT, event_payload);
       break;
     }
     case SL_WFX_DISCONNECT_IND_ID: {
       sl_wfx_disconnect_ind_t *disconnect_indication = (sl_wfx_disconnect_ind_t *)event_payload;
       sl_wfx_disconnect_callback(disconnect_indication->body.mac, disconnect_indication->body.reason);
-      PlatformMgrImpl().HandleWFXSystemEvent(WIFI_EVENT, event_payload);
       break;
     }
     case SL_WFX_RECEIVED_IND_ID: {
@@ -469,10 +471,9 @@ static void wfx_events_task(void *p_arg)
 {
   TickType_t last_dhcp_poll, now;
   EventBits_t flags;
-  void *ifp;
   (void)p_arg;
-
-  ifp            = wfx_get_netif(SL_WFX_STA_INTERFACE);
+  
+  sta_netif            = wfx_get_netif(SL_WFX_STA_INTERFACE);
   last_dhcp_poll = xTaskGetTickCount();
   while (1) {
     flags = xEventGroupWaitBits(sl_wfx_event_group,
@@ -490,24 +491,65 @@ static void wfx_events_task(void *p_arg)
 
     if (wifi_extra & WE_ST_STA_CONN) {
       if ((now = xTaskGetTickCount()) > (last_dhcp_poll + pdMS_TO_TICKS(250))) {
-        dhcpclient_poll(ifp);
+#if (CHIP_DEVICE_CONFIG_ENABLE_IPV4)
+         uint8_t dhcp_state = dhcpclient_poll(&sta_netif);
+
+         if ((dhcp_state == DHCP_ADDRESS_ASSIGNED) && !hasNotifiedIPV4) {
+            if (!hasNotifiedWifiConnectivity) {
+              EFR32_LOG ("WIFI: Has Notified Wifi Connectivity");
+              wfx_connected_notify(0, &ap_mac);
+              hasNotifiedWifiConnectivity = true;
+            }
+            wfx_dhcp_got_ipv4 ((uint32_t)sta_netif->ip_addr.u_addr.ip4.addr);
+            hasNotifiedIPV4 = true;
+         } else if (dhcp_state == DHCP_OFF) {
+            wfx_ip_changed_notify (0);
+            hasNotifiedIPV4 = false;
+         }
+#endif // CHIP_DEVICE_CONFIG_ENABLE_IPV4
+        if ((ip6_addr_ispreferred(netif_ip6_addr_state(sta_netif, 0))) && !hasNotifiedIPV6) {
+          if (!hasNotifiedWifiConnectivity) {
+            wfx_connected_notify(0, &ap_mac);
+            hasNotifiedWifiConnectivity = true;
+          }
+          wfx_ipv6_notify(1);
+          hasNotifiedIPV6 = true;
+        }
         last_dhcp_poll = now;
       }
     }
+
+
     if (flags & SL_WFX_CONNECT) {
+#if (CHIP_DEVICE_CONFIG_ENABLE_IPV4)
+      wfx_ip_changed_notify (0);
+      hasNotifiedIPV4 = false;
+#endif // CHIP_DEVICE_CONFIG_ENABLE_IPV4
+      wfx_ipv6_notify (0);
+      hasNotifiedIPV6 = false;
+      hasNotifiedWifiConnectivity = false;
       EFR32_LOG("WIFI: Connected to AP");
       wifi_extra |= WE_ST_STA_CONN;
       wfx_lwip_set_sta_link_up();
-      wfx_connected_notify(0, &ap_mac);
 #ifdef SLEEP_ENABLED
       if (!(wfx_get_wifi_state() & SL_WFX_AP_INTERFACE_UP)) {
         // Enable the power save
         sl_wfx_set_power_mode(WFM_PM_MODE_PS, WFM_PM_POLL_UAPSD, 1);
         sl_wfx_enable_device_power_save();
       }
-#endif
+#endif //SLEEP_ENABLED
+
     }
+
     if (flags & SL_WFX_DISCONNECT) {
+
+#if (CHIP_DEVICE_CONFIG_ENABLE_IPV4)
+      wfx_ip_changed_notify (0);
+      hasNotifiedIPV4 = false;
+#endif // CHIP_DEVICE_CONFIG_ENABLE_IPV4
+      wfx_ipv6_notify(0);
+      hasNotifiedIPV6 = false;
+      hasNotifiedWifiConnectivity = false;
       wifi_extra &= ~WE_ST_STA_CONN;
       wfx_lwip_set_sta_link_down();
     }
@@ -661,7 +703,7 @@ struct netif *wfx_GetNetif(sl_wfx_interface_t interface)
 {
   struct netif *SelectedNetif = NULL;
   if (interface == SL_WFX_STA_INTERFACE) {
-    SelectedNetif = &sta_netif;
+    SelectedNetif = sta_netif;
   }
 #ifdef SL_WFX_CONFIG_SOFTAP
   else if (interface == SL_WFX_SOFTAP_INTERFACE) {
@@ -756,6 +798,7 @@ void wfx_get_wifi_mac_addr(sl_wfx_interface_t interface, sl_wfx_mac_address_t *a
             mac->octet[4],
             mac->octet[5]);
 }
+
 bool wfx_have_ipv4_addr(sl_wfx_interface_t which_if)
 {
   if (which_if == SL_WFX_STA_INTERFACE) {
@@ -764,6 +807,21 @@ bool wfx_have_ipv4_addr(sl_wfx_interface_t which_if)
     return false; /* TODO */
   }
 }
+
+bool
+wfx_have_ipv6_addr (sl_wfx_interface_t which_if)
+{
+    EFR32_LOG ("%s: started.", __func__);
+    bool status = false;
+    if (which_if == SL_WFX_STA_INTERFACE) {
+        status = wfx_is_sta_connected();
+    } else {
+        status = false; /* TODO */
+    }
+    EFR32_LOG ("%s: status: %d", __func__, status);
+    return status;
+}
+
 sl_status_t wfx_sta_discon(void)
 {
   EFR32_LOG("STA-Discon: TODO");
