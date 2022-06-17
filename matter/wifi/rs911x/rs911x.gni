@@ -96,7 +96,6 @@ rs911x_defs = [
   "RSI_WLAN_ENABLE",
   "RSI_SPI_INTERFACE",
   "RSI_WITH_OS",
-  "CHIP_DEVICE_CONFIG_ENABLE_IPV4=1",
 ]
 rs911x_sock_defs = [
   "RS911X_SOCKETS",
