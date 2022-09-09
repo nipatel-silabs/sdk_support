@@ -74,6 +74,7 @@ EventGroupHandle_t sl_wfx_event_group;
 TaskHandle_t wfx_events_task_handle;
 static sl_wfx_mac_address_t ap_mac;
 static uint32_t sta_ip;
+static wfx_wifi_scan_result_t ap_info;
 
 // Set Scan Parameters
 #define ACTIVE_CHANNEL_TIME 110
@@ -102,6 +103,8 @@ wfx_wifi_provision_t wifi_provision;
 bool hasNotifiedIPV6 = false;
 bool hasNotifiedIPV4 = false;
 bool hasNotifiedWifiConnectivity = false;
+
+/* retry counters */
 static uint8_t retryJoin = 0;
 bool retryInProgress = false;
 
@@ -122,7 +125,7 @@ static void sl_wfx_scan_complete_callback(uint32_t status);
 static void wfx_events_task(void *p_arg);
 
 /* WF200 host callbacks */
-static void sl_wfx_connect_callback(uint8_t *mac, uint32_t status);
+static void sl_wfx_connect_callback(sl_wfx_connect_ind_body_t connect_indication_body);
 static void sl_wfx_disconnect_callback(uint8_t *mac, uint16_t reason);
 static void sl_wfx_generic_status_callback(sl_wfx_generic_ind_t *frame);
 
@@ -165,8 +168,7 @@ sl_status_t sl_wfx_host_process_event(sl_wfx_generic_message_t *event_payload) {
   case SL_WFX_CONNECT_IND_ID: {
     sl_wfx_connect_ind_t *connect_indication =
         (sl_wfx_connect_ind_t *)event_payload;
-    sl_wfx_connect_callback(connect_indication->body.mac,
-                            connect_indication->body.status);
+    sl_wfx_connect_callback(connect_indication->body);
     break;
   }
   case SL_WFX_DISCONNECT_IND_ID: {
@@ -349,12 +351,18 @@ static void sl_wfx_scan_complete_callback(uint32_t status) {
 /****************************************************************************
  * Callback when station connects
  *****************************************************************************/
-static void sl_wfx_connect_callback(uint8_t *mac, uint32_t status) {
+static void sl_wfx_connect_callback(sl_wfx_connect_ind_body_t connect_indication_body) {//(uint8_t *mac, uint32_t status) {
+  uint8_t *mac = connect_indication_body.mac;
+  uint32_t status = connect_indication_body.
   (void)(mac);
   switch (status) {
   case WFM_STATUS_SUCCESS: {
     EFR32_LOG("STA-Connected\r\n");
+    memcpy(&ap_info.bssid[0], mac, 6);
     memcpy(&ap_mac.octet[0], mac, 6);
+    memcpy(&ap_info.ssid[0], wifi_provision.ssid, sizeof(wifi_provision.ssid));
+    ap_info.security = wifi_provision.security;
+    ap_info.chan = connect_indication_body.channel;
     sl_wfx_context->state = static_cast<sl_wfx_state_t>(
         static_cast<int>(sl_wfx_context->state) |
         static_cast<int>(SL_WFX_STA_INTERFACE_CONNECTED));
@@ -700,21 +708,29 @@ static void wfx_wifi_hw_start(void) {
     EFR32_LOG("*ERR*WF200:init failed");
   }
 }
+
 /*
  * Get AP info
  */
 int32_t wfx_get_ap_info(wfx_wifi_scan_result_t *ap) {
-  /* TODO */
-  return -1;
+  ap = &ap_info;
+  status =   sl_wfx_get_signal_strength(&signal_strength);
+  if (status == SL_STATUS_OK) {
+    ap->rssi = (-1) * rssi;
+  }
+  return status;
 }
+
 int32_t wfx_get_ap_ext(wfx_wifi_scan_ext_t *extra_info) {
   /* TODO */
   return -1;
 }
+
 int32_t wfx_reset_counts() {
   /* TODO */
   return -1;
 }
+
 /*
  * I think that this is getting called before FreeRTOS threads are ready
  */
@@ -796,12 +812,18 @@ void wfx_clear_wifi_provision(void) {
 bool wfx_is_sta_provisioned(void) {
   return (wifi_provision.ssid[0]) ? true : false;
 }
+
+bool wfx_save_ap_data() {
+    ap_info
+}
+
 sl_status_t wfx_connect_to_ap(void) {
   sl_status_t result;
 
   if (wifi_provision.ssid[0] == 0) {
     return SL_STATUS_NOT_AVAILABLE;
   }
+
   EFR32_LOG("WIFI:JOIN to %s", &wifi_provision.ssid[0]);
 
   EFR32_LOG("WIFI Scan Paramter set to Active channel time %d, Passive Channel "
