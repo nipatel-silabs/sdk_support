@@ -353,12 +353,11 @@ static void sl_wfx_scan_complete_callback(uint32_t status) {
  *****************************************************************************/
 static void sl_wfx_connect_callback(sl_wfx_connect_ind_body_t connect_indication_body) {//(uint8_t *mac, uint32_t status) {
   uint8_t *mac = connect_indication_body.mac;
-  uint32_t status = connect_indication_body.
+  uint32_t status = connect_indication_body.status;
   (void)(mac);
   switch (status) {
   case WFM_STATUS_SUCCESS: {
     EFR32_LOG("STA-Connected\r\n");
-    memcpy(&ap_info.bssid[0], mac, 6);
     memcpy(&ap_mac.octet[0], mac, 6);
     memcpy(&ap_info.ssid[0], wifi_provision.ssid, sizeof(wifi_provision.ssid));
     ap_info.security = wifi_provision.security;
@@ -714,10 +713,20 @@ static void wfx_wifi_hw_start(void) {
  */
 int32_t wfx_get_ap_info(wfx_wifi_scan_result_t *ap) {
   ap = &ap_info;
-  status =   sl_wfx_get_signal_strength(&signal_strength);
+  uint32_t signal_strength;
+  EFR32_LOG("WIFI:SSID:: %s", &ap_info.ssid[0]);
+  EFR32_LOG("WIFI:Mac addr:: %02x:%02x:%02x:%02x:%02x:%02x", ap_info.bssid[0], ap_info.bssid[1], ap_info.bssid[2], ap_info.bssid[3], ap_info.bssid[4], ap_info.bssid[5]);
+  EFR32_LOG("WIFI:security:: %d", ap_info.security);
+  EFR32_LOG("WIFI:Channel:: to %d", ap_info.chan);
+
+  sl_status_t status =   sl_wfx_get_signal_strength(&signal_strength);
+
   if (status == SL_STATUS_OK) {
-    ap->rssi = (-1) * rssi;
+    EFR32_LOG("status SL_STATUS_OK & signal_strength:: %d", signal_strength);
+    ap->rssi = (-1) * signal_strength;
   }
+
+  EFR32_LOG("WIFI:JOIN to %s", ap_info.rssi);
   return status;
 }
 
@@ -811,10 +820,6 @@ void wfx_clear_wifi_provision(void) {
 }
 bool wfx_is_sta_provisioned(void) {
   return (wifi_provision.ssid[0]) ? true : false;
-}
-
-bool wfx_save_ap_data() {
-    ap_info
 }
 
 sl_status_t wfx_connect_to_ap(void) {
