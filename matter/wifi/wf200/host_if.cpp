@@ -99,6 +99,7 @@ uint8_t softap_channel = SOFTAP_CHANNEL_DEFAULT;
 /* station network interface structures */
 struct netif *sta_netif;
 wfx_wifi_provision_t wifi_provision;
+sl_wfx_get_counters_cnf_t *counters;
 
 bool hasNotifiedIPV6 = false;
 bool hasNotifiedIPV4 = false;
@@ -730,14 +731,113 @@ int32_t wfx_get_ap_info(wfx_wifi_scan_result_t *ap) {
   return status;
 }
 
-int32_t wfx_get_ap_ext(wfx_wifi_scan_ext_t *extra_info) {
-  /* TODO */
-  return -1;
+int32_t wfx_rsi_get_ap_ext(wfx_wifi_scan_ext_t *extra_info) {
+  int32_t status;
+  uint8_t buff[28] = {0};
+  status = rsi_wlan_get(RSI_WLAN_EXT_STATS, buff, sizeof(buff));
+  if (status != RSI_SUCCESS) {
+    WFX_RSI_LOG("\r\n Failed, Error Code : 0x%lX\r\n", status);
+  } else {
+    rsi_wlan_ext_stats_t *test = (rsi_wlan_ext_stats_t *)buff;
+    extra_info->beacon_lost_count =
+        test->beacon_lost_count - temp_reset->beacon_lost_count;
+    extra_info->beacon_rx_count =
+        test->beacon_rx_count - temp_reset->beacon_rx_count;
+    extra_info->mcast_rx_count =
+        test->mcast_rx_count - temp_reset->mcast_rx_count;
+    extra_info->mcast_tx_count =
+        test->mcast_tx_count - temp_reset->mcast_tx_count;
+    extra_info->ucast_rx_count =
+        test->ucast_rx_count - temp_reset->ucast_rx_count;
+    extra_info->ucast_tx_count =
+        test->ucast_tx_count - temp_reset->ucast_tx_count;
+    extra_info->overrun_count = test->overrun_count - temp_reset->overrun_count;
+  }
+  return status;
 }
 
-int32_t wfx_reset_counts() {
-  /* TODO */
-  return -1;
+sl_status_t get_all_counters(void)
+{
+  sl_status_t        result;
+  uint8_t            command_id = 0x05;
+  uint16_t           mib_id = 0x2035;
+  sl_wfx_mib_req_t   *request = NULL;
+  uint32_t           request_length = SL_WFX_ROUND_UP_EVEN(sizeof(sl_wfx_header_mib_t) + sizeof(sl_wfx_mib_req_body_t));
+
+  result = sl_wfx_allocate_command_buffer((sl_wfx_generic_message_t **)&request, command_id, SL_WFX_CONTROL_BUFFER, request_length);
+
+  request->body.mib_id = mib_id;
+  //request->header.info = (SL_WFX_STA_INTERFACE << SL_WFX_MSG_INFO_INTERFACE_OFFSET) & SL_WFX_MSG_INFO_INTERFACE_MASK;
+  request->header.interface = 0x2;
+  request->header.encrypted = 0x0;
+
+      result = sl_wfx_send_request(command_id, (sl_wfx_generic_message_t *)request, request_length);
+      SL_WFX_ERROR_CHECK(result);
+
+      result = sl_wfx_host_wait_for_confirmation(command_id, SL_WFX_DEFAULT_REQUEST_TIMEOUT_MS, (void **)&counters);
+      SL_WFX_ERROR_CHECK(result);
+
+      printf("%-24s %12s \r\n",
+           "", "Debug Counters Content");
+
+#define PUT_COUNTER(name) printf("%-24s %lu\r\n", #name, (unsigned long)counters->body.count_##name);
+      printf("%-24s %lu\r\n","rcpi", (unsigned long)counters->body.rcpi);
+      PUT_COUNTER(plcp_errors);
+      PUT_COUNTER(fcs_errors);
+      PUT_COUNTER(tx_packets);
+      PUT_COUNTER(rx_packets);
+      PUT_COUNTER(rx_packet_errors);
+      PUT_COUNTER(rx_decryption_failures);
+      PUT_COUNTER(rx_mic_failures);
+      PUT_COUNTER(rx_no_key_failures);
+      PUT_COUNTER(tx_multicast_frames);
+      PUT_COUNTER(tx_frames_success);
+      PUT_COUNTER(tx_frame_failures);
+      PUT_COUNTER(tx_frames_retried);
+      PUT_COUNTER(tx_frames_multi_retried);
+      PUT_COUNTER(rx_frame_duplicates);
+      PUT_COUNTER(rts_success);
+      PUT_COUNTER(rts_failures);
+      PUT_COUNTER(ack_failures);
+      PUT_COUNTER(rx_multicast_frames);
+      PUT_COUNTER(rx_frames_success);
+      PUT_COUNTER(rx_cmacicv_errors);
+      PUT_COUNTER(rx_cmac_replays);
+      PUT_COUNTER(rx_mgmt_ccmp_replays);
+      PUT_COUNTER(rx_bipmic_errors);
+      PUT_COUNTER(rx_beacon);
+      PUT_COUNTER(miss_beacon);
+
+      error_handler:
+      if (result == SL_STATUS_TIMEOUT) {
+        if (sl_wfx_context->used_buffers > 0) {
+          sl_wfx_context->used_buffers--;
+        }
+      }
+      if (request != NULL) {
+        sl_wfx_free_command_buffer((sl_wfx_generic_message_t *)request, command_id, SL_WFX_CONTROL_BUFFER);
+      }
+
+  return result;
+}
+
+int32_t wfx_rsi_reset_count() {
+  int32_t status;
+  uint8_t buff[28] = {0};
+  status = rsi_wlan_get(RSI_WLAN_EXT_STATS, buff, sizeof(buff));
+  if (status != RSI_SUCCESS) {
+    WFX_RSI_LOG("\r\n Failed, Error Code : 0x%lX\r\n", status);
+  } else {
+    rsi_wlan_ext_stats_t *test = (rsi_wlan_ext_stats_t *)buff;
+    temp_reset->beacon_lost_count = test->beacon_lost_count;
+    temp_reset->beacon_rx_count = test->beacon_rx_count;
+    temp_reset->mcast_rx_count = test->mcast_rx_count;
+    temp_reset->mcast_tx_count = test->mcast_tx_count;
+    temp_reset->ucast_rx_count = test->ucast_rx_count;
+    temp_reset->ucast_tx_count = test->ucast_tx_count;
+    temp_reset->overrun_count = test->overrun_count;
+  }
+  return status;
 }
 
 /*
