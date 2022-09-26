@@ -43,17 +43,81 @@
 
 #include "sl_wfx_cmd_api.h"
 #include "sl_wfx_constants.h"
-#else /* RS911x */
+
+typedef struct __attribute__((__packed__)) sl_wfx_get_counters_cnf_body_s {
+  uint32_t status;
+  uint16_t mib_id;
+  uint16_t length;
+  uint32_t rcpi;
+  uint32_t count_plcp_errors;
+  uint32_t count_fcs_errors;
+  uint32_t count_tx_packets;
+  uint32_t count_rx_packets;
+  uint32_t count_rx_packet_errors;
+  uint32_t count_rx_decryption_failures;
+  uint32_t count_rx_mic_failures;
+  uint32_t count_rx_no_key_failures;
+  uint32_t count_tx_multicast_frames;
+  uint32_t count_tx_frames_success;
+  uint32_t count_tx_frame_failures;
+  uint32_t count_tx_frames_retried;
+  uint32_t count_tx_frames_multi_retried;
+  uint32_t count_rx_frame_duplicates;
+  uint32_t count_rts_success;
+  uint32_t count_rts_failures;
+  uint32_t count_ack_failures;
+  uint32_t count_rx_multicast_frames;
+  uint32_t count_rx_frames_success;
+  uint32_t count_rx_cmacicv_errors;
+  uint32_t count_rx_cmac_replays;
+  uint32_t count_rx_mgmt_ccmp_replays;
+  uint32_t count_rx_bipmic_errors;
+  uint32_t count_rx_beacon;
+  uint32_t count_miss_beacon;
+  uint32_t reserved[15];
+} sl_wfx_get_counters_cnf_body_t;
+
+typedef struct __attribute__((__packed__)) sl_wfx_get_counters_cnf_s {
+  /** Common message header. */
+  sl_wfx_header_t header;
+  /** Confirmation message body. */
+  sl_wfx_get_counters_cnf_body_t body;
+} sl_wfx_get_counters_cnf_t;
+
+typedef struct __attribute__((__packed__)) sl_wfx_mib_req_body_s {
+  uint16_t mib_id; ///< ID of the MIB to be read.
+  uint16_t reserved;
+} sl_wfx_mib_req_body_t;
+
+typedef struct __attribute__((__packed__)) sl_wfx_header_mib_s {
+  uint16_t length; ///< Message length in bytes including this uint16_t.
+    ///< Maximum value is 8188 but maximum Request size is FW dependent and reported in the ::sl_wfx_startup_ind_body_t::size_inp_ch_buf.
+  uint8_t id; ///< Contains the message Id indexed by sl_wfx_general_commands_ids_t or sl_wfx_message_ids_t.
+  uint8_t reserved : 1;
+  uint8_t interface : 2;
+  uint8_t seqnum : 3;
+  uint8_t encrypted : 2;
+} sl_wfx_header_mib_t;
+
+typedef struct __attribute__((__packed__)) sl_wfx_mib_req_s {
+  /** Common message header. */
+  sl_wfx_header_mib_t header;
+  /** Request message body. */
+  sl_wfx_mib_req_body_t body;
+} sl_wfx_mib_req_t;
+
+#else /* End WF200 else RS911x */
+
 #include "wfx_msgs.h"
 
 /* Wi-Fi events*/
-#define SL_WFX_STARTUP_IND_ID 1
-#define SL_WFX_CONNECT_IND_ID 2
+#define SL_WFX_STARTUP_IND_ID    1
+#define SL_WFX_CONNECT_IND_ID    2
 #define SL_WFX_DISCONNECT_IND_ID 3
-#define SL_WFX_SCAN_COMPLETE_ID 4
-#define WFX_RSI_SSID_SIZE 64
+#define SL_WFX_SCAN_COMPLETE_ID  4
+#define WFX_RSI_SSID_SIZE        64
 
-#endif /* WF200 */
+#endif /* RS911x */
 
 #ifndef RS911X_SOCKETS
 /* LwIP includes. */
@@ -64,11 +128,11 @@
 #include "lwip/tcpip.h"
 
 /* Wi-Fi bitmask events - for the task */
-#define SL_WFX_CONNECT (1 << 1)
-#define SL_WFX_DISCONNECT (1 << 2)
-#define SL_WFX_START_AP (1 << 3)
-#define SL_WFX_STOP_AP (1 << 4)
-#define SL_WFX_SCAN_START (1 << 5)
+#define SL_WFX_CONNECT       (1 << 1)
+#define SL_WFX_DISCONNECT    (1 << 2)
+#define SL_WFX_START_AP      (1 << 3)
+#define SL_WFX_STOP_AP       (1 << 4)
+#define SL_WFX_SCAN_START    (1 << 5)
 #define SL_WFX_SCAN_COMPLETE (1 << 6)
 #define SL_WFX_RETRY_CONNECT (1 << 7)
 
@@ -89,19 +153,19 @@ typedef enum {
 
 /* Note that these are same as RSI_security */
 typedef enum {
-  WFX_SEC_NONE = 0,
-  WFX_SEC_WPA = 1,
-  WFX_SEC_WPA2 = 2,
-  WFX_SEC_WEP = 3,
-  WFX_SEC_WPA_EAP = 4,
-  WFX_SEC_WPA2_EAP = 5,
+  WFX_SEC_NONE           = 0,
+  WFX_SEC_WPA            = 1,
+  WFX_SEC_WPA2           = 2,
+  WFX_SEC_WEP            = 3,
+  WFX_SEC_WPA_EAP        = 4,
+  WFX_SEC_WPA2_EAP       = 5,
   WFX_SEC_WPA_WPA2_MIXED = 6,
-  WFX_SEC_WPA_PMK = 7,
-  WFX_SEC_WPA2_PMK = 8,
-  WFX_SEC_WPS_PIN = 9,
-  WFX_SEC_GEN_WPS_PIN = 10,
-  WFX_SEC_PUSH_BTN = 11,
-  WFX_SEC_WPA3 = 11,
+  WFX_SEC_WPA_PMK        = 7,
+  WFX_SEC_WPA2_PMK       = 8,
+  WFX_SEC_WPS_PIN        = 9,
+  WFX_SEC_GEN_WPS_PIN    = 10,
+  WFX_SEC_PUSH_BTN       = 11,
+  WFX_SEC_WPA3           = 11,
 } wfx_sec_t;
 #define WPA3_SECURITY 3
 typedef struct {
@@ -142,16 +206,16 @@ typedef struct wfx_wifi_scan_ext {
  * We took it from the SDK (for WF200)
  */
 typedef enum {
-  SL_WFX_NOT_INIT = 0,
-  SL_WFX_STARTED = 1,
+  SL_WFX_NOT_INIT                = 0,
+  SL_WFX_STARTED                 = 1,
   SL_WFX_STA_INTERFACE_CONNECTED = 2,
-  SL_WFX_AP_INTERFACE_UP = 3,
-  SL_WFX_SLEEPING = 4,
-  SL_WFX_POWER_SAVE_ACTIVE = 5,
+  SL_WFX_AP_INTERFACE_UP         = 3,
+  SL_WFX_SLEEPING                = 4,
+  SL_WFX_POWER_SAVE_ACTIVE       = 5,
 } sl_wfx_state_t;
 
 typedef enum {
-  SL_WFX_STA_INTERFACE = 0,    ///< Interface 0, linked to the station
+  SL_WFX_STA_INTERFACE    = 0, ///< Interface 0, linked to the station
   SL_WFX_SOFTAP_INTERFACE = 1, ///< Interface 1, linked to the softap
 } sl_wfx_interface_t;
 
@@ -164,8 +228,7 @@ void sl_wfx_host_gpio_init(void);
 sl_status_t wfx_wifi_start(void);
 void wfx_enable_sta_mode(void);
 sl_wfx_state_t wfx_get_wifi_state(void);
-void wfx_get_wifi_mac_addr(sl_wfx_interface_t interface,
-                           sl_wfx_mac_address_t *addr);
+void wfx_get_wifi_mac_addr(sl_wfx_interface_t interface, sl_wfx_mac_address_t *addr);
 void wfx_set_wifi_provision(wfx_wifi_provision_t *wifiConfig);
 bool wfx_get_wifi_provision(wfx_wifi_provision_t *wifiConfig);
 bool wfx_is_sta_provisioned(void);
@@ -182,10 +245,7 @@ sl_status_t wfx_sta_discon(void);
 bool wfx_have_ipv4_addr(sl_wfx_interface_t);
 bool wfx_have_ipv6_addr(sl_wfx_interface_t);
 wifi_mode_t wfx_get_wifi_mode(void);
-bool wfx_start_scan(
-    char *ssid,
-    void (*scan_cb)(
-        wfx_wifi_scan_result_t *)); /* true returned if successfuly started */
+bool wfx_start_scan(char *ssid, void (*scan_cb)(wfx_wifi_scan_result_t *)); /* true returned if successfuly started */
 void wfx_cancel_scan(void);
 
 /*
