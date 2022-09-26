@@ -749,19 +749,17 @@ int32_t wfx_get_ap_info(wfx_wifi_scan_result_t *ap)
 int32_t wfx_get_ap_ext(wfx_wifi_scan_ext_t *extra_info)
 {
   int32_t status;
-  uint8_t buff[28] = { 0 };
-  status           = get_all_counters();
+  status = get_all_counters();
   if (status != SL_STATUS_OK) {
     EFR32_LOG("Failed to get the couters");
   } else {
-    rsi_wlan_ext_stats_t *test    = (rsi_wlan_ext_stats_t *)buff;
-    extra_info->beacon_lost_count = counters->count_miss_beacon;
-    extra_info->beacon_rx_count   = counters->count_rx_beacon;
-    extra_info->mcast_rx_count    = counters->count_rx_multicast_frames;
-    extra_info->mcast_tx_count    = counters->count_tx_multicast_frames;
-    extra_info->ucast_rx_count    = counters->ucast_rx_count;
-    extra_info->ucast_tx_count    = counters->ucast_tx_count;
-    extra_info->overrun_count     = counters->overrun_count;
+    extra_info->beacon_lost_count = counters->body.count_miss_beacon;
+    extra_info->beacon_rx_count   = counters->body.count_rx_beacon;
+    extra_info->mcast_rx_count    = counters->body.count_rx_multicast_frames;
+    extra_info->mcast_tx_count    = counters->body.count_tx_multicast_frames;
+    //extra_info->ucast_rx_count    = counters->ucast_rx_count;
+    //extra_info->ucast_tx_count    = counters->ucast_tx_count;
+    //extra_info->overrun_count     = counters->body.overrun_count;
   }
   return status;
 }
