@@ -346,7 +346,6 @@ static void sl_wfx_connect_callback(sl_wfx_connect_ind_body_t connect_indication
     case WFM_STATUS_SUCCESS: {
       EFR32_LOG("STA-Connected\r\n");
       memcpy(&ap_mac.octet[0], mac, 6);
-      memcpy(&ap_info.ssid[0], wifi_provision.ssid, sizeof(wifi_provision.ssid));
       ap_info.security      = wifi_provision.security;
       ap_info.chan          = connect_indication_body.channel;
       sl_wfx_context->state = static_cast<sl_wfx_state_t>(static_cast<int>(sl_wfx_context->state)
@@ -722,9 +721,9 @@ static void wfx_wifi_hw_start(void)
  */
 int32_t wfx_get_ap_info(wfx_wifi_scan_result_t *ap)
 {
-  ap = &ap_info;
   uint32_t signal_strength;
   EFR32_LOG("WIFI:SSID:: %s", &ap_info.ssid[0]);
+  memcpy(ap->ssid, ap_info.ssid, sizeof(ap_info.ssid));
   EFR32_LOG("WIFI:Mac addr:: %02x:%02x:%02x:%02x:%02x:%02x",
             ap_info.bssid[0],
             ap_info.bssid[1],
@@ -732,8 +731,11 @@ int32_t wfx_get_ap_info(wfx_wifi_scan_result_t *ap)
             ap_info.bssid[3],
             ap_info.bssid[4],
             ap_info.bssid[5]);
-  EFR32_LOG("WIFI:security:: %d", ap_info.security);
-  EFR32_LOG("WIFI:Channel:: to %d", ap_info.chan);
+  memcpy(ap->bssid, ap_info.bssid, sizeof(ap_info.bssid));
+  ap->security = ap_info.security;
+  EFR32_LOG("WIFI:security:: %d", ap->security);
+  ap->chan = ap_info.chan;
+  EFR32_LOG("WIFI:Channel:: to %d", ap->chan);
 
   sl_status_t status = sl_wfx_get_signal_strength(&signal_strength);
 
@@ -741,8 +743,6 @@ int32_t wfx_get_ap_info(wfx_wifi_scan_result_t *ap)
     EFR32_LOG("status SL_STATUS_OK & signal_strength:: %d", signal_strength);
     ap->rssi = (-1) * signal_strength;
   }
-
-  EFR32_LOG("WIFI:JOIN to %s", ap_info.rssi);
   return status;
 }
 
@@ -757,8 +757,8 @@ int32_t wfx_get_ap_ext(wfx_wifi_scan_ext_t *extra_info)
     extra_info->beacon_rx_count   = counters->body.count_rx_beacon;
     extra_info->mcast_rx_count    = counters->body.count_rx_multicast_frames;
     extra_info->mcast_tx_count    = counters->body.count_tx_multicast_frames;
-    //extra_info->ucast_rx_count    = counters->ucast_rx_count;
-    //extra_info->ucast_tx_count    = counters->ucast_tx_count;
+    extra_info->ucast_rx_count    = counters->body.count_rx_packets;
+    extra_info->ucast_tx_count    = counters->body.count_tx_packets;
     //extra_info->overrun_count     = counters->body.overrun_count;
   }
   return status;
@@ -985,6 +985,7 @@ void wfx_get_wifi_mac_addr(sl_wfx_interface_t interface, sl_wfx_mac_address_t *a
             mac->octet[3],
             mac->octet[4],
             mac->octet[5]);
+  memcpy(&ap_info.bssid[0], &mac->octet[0], 6);
 }
 
 bool wfx_have_ipv4_addr(sl_wfx_interface_t which_if)
