@@ -85,19 +85,17 @@ EventGroupHandle_t sl_wfx_event_group;
 TaskHandle_t wfx_events_task_handle;
 static sl_wfx_mac_address_t ap_mac;
 static uint32_t sta_ip;
+static wfx_wifi_scan_result_t ap_info;
 
 // Set Scan Parameters
-#define ACTIVE_CHANNEL_TIME 110
+#define ACTIVE_CHANNEL_TIME  110
 #define PASSIVE_CHANNEL_TIME 0
-#define NUM_PROBE_REQUEST 2
+#define NUM_PROBE_REQUEST    2
 
 // wfx_fmac_driver context
 sl_wfx_context_t wifiContext;
 static uint8_t wifi_extra;
 
-/*****************************************************************************
- * macros
- ******************************************************************************/
 #define WE_ST_STARTED    1
 #define WE_ST_STA_CONN   2
 #define WE_ST_HW_STARTED 4
@@ -113,12 +111,15 @@ uint8_t softap_channel                 = SOFTAP_CHANNEL_DEFAULT;
 /* station network interface structures */
 struct netif *sta_netif;
 wfx_wifi_provision_t wifi_provision;
+sl_wfx_get_counters_cnf_t *counters;
 
-bool hasNotifiedIPV6 = false;
-bool hasNotifiedIPV4 = false;
+bool hasNotifiedIPV6             = false;
+bool hasNotifiedIPV4             = false;
 bool hasNotifiedWifiConnectivity = false;
+
+/* retry counters */
 static uint8_t retryJoin = 0;
-bool retryInProgress = false;
+bool retryInProgress     = false;
 
 #ifdef SL_WFX_CONFIG_SCAN
 static struct scan_result_holder {
@@ -126,18 +127,16 @@ static struct scan_result_holder {
   wfx_wifi_scan_result scan;
 } * scan_save;
 static uint8_t scan_count = 0;
-static void (*scan_cb)(
-    wfx_wifi_scan_result_t *); /* user-callback - when scan is done */
-static char *scan_ssid;        /* Which one are we scanning for */
-static void
-sl_wfx_scan_result_callback(sl_wfx_scan_result_ind_body_t *scan_result);
+static void (*scan_cb)(wfx_wifi_scan_result_t *); /* user-callback - when scan is done */
+static char *scan_ssid;                           /* Which one are we scanning for */
+static void sl_wfx_scan_result_callback(sl_wfx_scan_result_ind_body_t *scan_result);
 static void sl_wfx_scan_complete_callback(uint32_t status);
 #endif /* SL_WFX_CONFIG_SCAN */
 
 static void wfx_events_task(void *p_arg);
 
 /* WF200 host callbacks */
-static void sl_wfx_connect_callback(uint8_t *mac, uint32_t status);
+static void sl_wfx_connect_callback(sl_wfx_connect_ind_body_t connect_indication_body);
 static void sl_wfx_disconnect_callback(uint8_t *mac, uint16_t reason);
 static void sl_wfx_generic_status_callback(sl_wfx_generic_ind_t *frame);
 
@@ -145,8 +144,7 @@ static void sl_wfx_generic_status_callback(sl_wfx_generic_ind_t *frame);
 static void sl_wfx_start_ap_callback(uint32_t status);
 static void sl_wfx_stop_ap_callback(void);
 static void sl_wfx_client_connected_callback(uint8_t *mac);
-static void sl_wfx_ap_client_disconnected_callback(uint32_t status,
-                                                   uint8_t *mac);
+static void sl_wfx_ap_client_disconnected_callback(uint32_t status, uint8_t *mac);
 static void sl_wfx_ap_client_rejected_callback(uint32_t status, uint8_t *mac);
 #endif
 
@@ -162,13 +160,13 @@ static void wfx_events_task_start()
   /* create an event group to track Wi-Fi events */
   sl_wfx_event_group = xEventGroupCreateStatic(&wfxEventGroup);
 
-  wfx_events_task_handle = xTaskCreateStatic(wfx_events_task, "wfx_events",
-  			WLAN_TASK_STACK_SIZE, NULL, WLAN_TASK_PRIORITY, wfxEventTaskStack, &wfxEventTaskBuffer);
+
   if (NULL == wfx_events_task_handle) {
+  if (xTaskCreate(wfx_events_task, "wfx_events", 1024, NULL, 1, &wfx_events_task_handle) != pdPASS) {
     EFR32_LOG("Failed to create WFX wfx_events");
   }
 }
-
+}
 /****************************************************************************
  * @fn   sl_status_t sl_wfx_host_process_event(sl_wfx_generic_message_t *event_payload)
  * @brief
@@ -177,131 +175,114 @@ static void wfx_events_task_start()
  * @returns Returns SL_STATUS_OK if successful,
  *SL_STATUS_FAIL otherwise
  *****************************************************************************/
-sl_status_t sl_wfx_host_process_event(sl_wfx_generic_message_t *event_payload) {
+sl_status_t sl_wfx_host_process_event(sl_wfx_generic_message_t *event_payload)
+{
   switch (event_payload->header.id) {
-  /******** INDICATION ********/
-  case SL_WFX_STARTUP_IND_ID: {
-    EFR32_LOG("WFX Startup Completed\r\n");
-    PlatformMgrImpl().HandleWFXSystemEvent(WIFI_EVENT, event_payload);
-    break;
-  }
-  case SL_WFX_CONNECT_IND_ID: {
-    sl_wfx_connect_ind_t *connect_indication =
-        (sl_wfx_connect_ind_t *)event_payload;
-    sl_wfx_connect_callback(connect_indication->body.mac,
-                            connect_indication->body.status);
-    break;
-  }
-  case SL_WFX_DISCONNECT_IND_ID: {
-    sl_wfx_disconnect_ind_t *disconnect_indication =
-        (sl_wfx_disconnect_ind_t *)event_payload;
-    sl_wfx_disconnect_callback(disconnect_indication->body.mac,
-                               disconnect_indication->body.reason);
-    break;
-  }
-  case SL_WFX_RECEIVED_IND_ID: {
-    sl_wfx_received_ind_t *ethernet_frame =
-        (sl_wfx_received_ind_t *)event_payload;
-      if (ethernet_frame->body.frame_type == ETH_FRAME) {
-      sl_wfx_host_received_frame_callback(ethernet_frame);
+    /******** INDICATION ********/
+    case SL_WFX_STARTUP_IND_ID: {
+      EFR32_LOG("WFX Startup Completed\r\n");
+      PlatformMgrImpl().HandleWFXSystemEvent(WIFI_EVENT, event_payload);
+      break;
     }
-    break;
-  }
+    case SL_WFX_CONNECT_IND_ID: {
+      sl_wfx_connect_ind_t *connect_indication = (sl_wfx_connect_ind_t *)event_payload;
+      sl_wfx_connect_callback(connect_indication->body);
+      break;
+    }
+    case SL_WFX_DISCONNECT_IND_ID: {
+      sl_wfx_disconnect_ind_t *disconnect_indication = (sl_wfx_disconnect_ind_t *)event_payload;
+      sl_wfx_disconnect_callback(disconnect_indication->body.mac, disconnect_indication->body.reason);
+      break;
+    }
+    case SL_WFX_RECEIVED_IND_ID: {
+      sl_wfx_received_ind_t *ethernet_frame = (sl_wfx_received_ind_t *)event_payload;
+      if (ethernet_frame->body.frame_type == 0) {
+        sl_wfx_host_received_frame_callback(ethernet_frame);
+      }
+      break;
+    }
 #ifdef SL_WFX_CONFIG_SCAN
-  case SL_WFX_SCAN_RESULT_IND_ID: {
-    sl_wfx_scan_result_ind_t *scan_result =
-        (sl_wfx_scan_result_ind_t *)event_payload;
-    sl_wfx_scan_result_callback(&scan_result->body);
-    break;
-  }
-  case SL_WFX_SCAN_COMPLETE_IND_ID: {
-    sl_wfx_scan_complete_ind_t *scan_complete =
-        (sl_wfx_scan_complete_ind_t *)event_payload;
-    sl_wfx_scan_complete_callback(scan_complete->body.status);
-    break;
-  }
+    case SL_WFX_SCAN_RESULT_IND_ID: {
+      sl_wfx_scan_result_ind_t *scan_result = (sl_wfx_scan_result_ind_t *)event_payload;
+      sl_wfx_scan_result_callback(&scan_result->body);
+      break;
+    }
+    case SL_WFX_SCAN_COMPLETE_IND_ID: {
+      sl_wfx_scan_complete_ind_t *scan_complete = (sl_wfx_scan_complete_ind_t *)event_payload;
+      sl_wfx_scan_complete_callback(scan_complete->body.status);
+      break;
+    }
 #endif /* SL_WFX_CONFIG_SCAN */
 #ifdef SL_WFX_CONFIG_SOFTAP
-  case SL_WFX_START_AP_IND_ID: {
-    sl_wfx_start_ap_ind_t *start_ap_indication =
-        (sl_wfx_start_ap_ind_t *)event_payload;
-    sl_wfx_start_ap_callback(start_ap_indication->body.status);
-    break;
-  }
-  case SL_WFX_STOP_AP_IND_ID: {
-    sl_wfx_stop_ap_callback();
-    break;
-  }
-  case SL_WFX_AP_CLIENT_CONNECTED_IND_ID: {
-    sl_wfx_ap_client_connected_ind_t *client_connected_indication =
-        (sl_wfx_ap_client_connected_ind_t *)event_payload;
-    sl_wfx_client_connected_callback(client_connected_indication->body.mac);
-    break;
-  }
-  case SL_WFX_AP_CLIENT_REJECTED_IND_ID: {
-    sl_wfx_ap_client_rejected_ind_t *ap_client_rejected_indication =
-        (sl_wfx_ap_client_rejected_ind_t *)event_payload;
-    sl_wfx_ap_client_rejected_callback(
-        ap_client_rejected_indication->body.reason,
-        ap_client_rejected_indication->body.mac);
-    break;
-  }
-  case SL_WFX_AP_CLIENT_DISCONNECTED_IND_ID: {
-    sl_wfx_ap_client_disconnected_ind_t *ap_client_disconnected_indication =
+    case SL_WFX_START_AP_IND_ID: {
+      sl_wfx_start_ap_ind_t *start_ap_indication = (sl_wfx_start_ap_ind_t *)event_payload;
+      sl_wfx_start_ap_callback(start_ap_indication->body.status);
+      break;
+    }
+    case SL_WFX_STOP_AP_IND_ID: {
+      sl_wfx_stop_ap_callback();
+      break;
+    }
+    case SL_WFX_AP_CLIENT_CONNECTED_IND_ID: {
+      sl_wfx_ap_client_connected_ind_t *client_connected_indication = (sl_wfx_ap_client_connected_ind_t *)event_payload;
+      sl_wfx_client_connected_callback(client_connected_indication->body.mac);
+      break;
+    }
+    case SL_WFX_AP_CLIENT_REJECTED_IND_ID: {
+      sl_wfx_ap_client_rejected_ind_t *ap_client_rejected_indication = (sl_wfx_ap_client_rejected_ind_t *)event_payload;
+      sl_wfx_ap_client_rejected_callback(ap_client_rejected_indication->body.reason,
+                                         ap_client_rejected_indication->body.mac);
+      break;
+    }
+    case SL_WFX_AP_CLIENT_DISCONNECTED_IND_ID: {
+      sl_wfx_ap_client_disconnected_ind_t *ap_client_disconnected_indication =
         (sl_wfx_ap_client_disconnected_ind_t *)event_payload;
-    sl_wfx_ap_client_disconnected_callback(
-        ap_client_disconnected_indication->body.reason,
-        ap_client_disconnected_indication->body.mac);
-    break;
-  }
+      sl_wfx_ap_client_disconnected_callback(ap_client_disconnected_indication->body.reason,
+                                             ap_client_disconnected_indication->body.mac);
+      break;
+    }
 #endif /* SL_WFX_CONFIG_SOFTAP */
 #ifdef SL_WFX_USE_SECURE_LINK
-  case SL_WFX_SECURELINK_EXCHANGE_PUB_KEYS_IND_ID: {
-    if (host_context.waited_event_id !=
-        SL_WFX_SECURELINK_EXCHANGE_PUB_KEYS_IND_ID) {
-      memcpy((void *)&sl_wfx_context->secure_link_exchange_ind,
-             (void *)event_payload, event_payload->header.length);
+    case SL_WFX_SECURELINK_EXCHANGE_PUB_KEYS_IND_ID: {
+      if (host_context.waited_event_id != SL_WFX_SECURELINK_EXCHANGE_PUB_KEYS_IND_ID) {
+        memcpy((void *)&sl_wfx_context->secure_link_exchange_ind, (void *)event_payload, event_payload->header.length);
+      }
+      break;
     }
-    break;
-  }
 #endif
-  case SL_WFX_GENERIC_IND_ID: {
-    sl_wfx_generic_ind_t *generic_status =
-        (sl_wfx_generic_ind_t *)event_payload;
-    sl_wfx_generic_status_callback(generic_status);
-    break;
-  }
-  case SL_WFX_EXCEPTION_IND_ID: {
-    sl_wfx_exception_ind_t *firmware_exception =
-        (sl_wfx_exception_ind_t *)event_payload;
-    uint8_t *exception_tmp = (uint8_t *)firmware_exception;
-    EFR32_LOG("firmware exception\r\n");
-    for (uint16_t i = 0; i < firmware_exception->header.length; i += 16) {
-      EFR32_LOG("hif: %.8x:", i);
-      for (uint8_t j = 0;
-           (j < 16) && ((i + j) < firmware_exception->header.length); j++) {
-        EFR32_LOG(" %.2x", *exception_tmp);
-        exception_tmp++;
-      }
-      EFR32_LOG("\r\n");
+    case SL_WFX_GENERIC_IND_ID: {
+      sl_wfx_generic_ind_t *generic_status = (sl_wfx_generic_ind_t *)event_payload;
+      sl_wfx_generic_status_callback(generic_status);
+      break;
     }
-    break;
-  }
-  case SL_WFX_ERROR_IND_ID: {
-    sl_wfx_error_ind_t *firmware_error = (sl_wfx_error_ind_t *)event_payload;
-    uint8_t *error_tmp = (uint8_t *)firmware_error;
-    EFR32_LOG("firmware error %lu\r\n", firmware_error->body.type);
-    for (uint16_t i = 0; i < firmware_error->header.length; i += 16) {
-      EFR32_LOG("hif: %.8x:", i);
-      for (uint8_t j = 0; (j < 16) && ((i + j) < firmware_error->header.length);
-           j++) {
-        EFR32_LOG(" %.2x", *error_tmp);
-        error_tmp++;
+    case SL_WFX_EXCEPTION_IND_ID: {
+      sl_wfx_exception_ind_t *firmware_exception = (sl_wfx_exception_ind_t *)event_payload;
+      uint8_t *exception_tmp                     = (uint8_t *)firmware_exception;
+      EFR32_LOG("firmware exception\r\n");
+      for (uint16_t i = 0; i < firmware_exception->header.length; i += 16) {
+        EFR32_LOG("hif: %.8x:", i);
+        for (uint8_t j = 0; (j < 16) && ((i + j) < firmware_exception->header.length); j++) {
+          EFR32_LOG(" %.2x", *exception_tmp);
+          exception_tmp++;
+        }
+        EFR32_LOG("\r\n");
       }
-      EFR32_LOG("\r\n");
+      break;
     }
-    break;
-  }
+    case SL_WFX_ERROR_IND_ID: {
+      sl_wfx_error_ind_t *firmware_error = (sl_wfx_error_ind_t *)event_payload;
+      uint8_t *error_tmp                 = (uint8_t *)firmware_error;
+      EFR32_LOG("firmware error %lu\r\n", firmware_error->body.type);
+      for (uint16_t i = 0; i < firmware_error->header.length; i += 16) {
+        EFR32_LOG("hif: %.8x:", i);
+        for (uint8_t j = 0; (j < 16) && ((i + j) < firmware_error->header.length); j++) {
+          EFR32_LOG(" %.2x", *error_tmp);
+          error_tmp++;
+        }
+        EFR32_LOG("\r\n");
+      }
+      break;
+    }
   }
 
   return SL_STATUS_OK;
@@ -315,14 +296,20 @@ sl_status_t sl_wfx_host_process_event(sl_wfx_generic_message_t *event_payload) {
  * @param[in] scan_result:
  * @return None
  *****************************************************************************/
-static void
-sl_wfx_scan_result_callback(sl_wfx_scan_result_ind_body_t *scan_result) {
+static void sl_wfx_scan_result_callback(sl_wfx_scan_result_ind_body_t *scan_result)
+{
   struct scan_result_holder *ap;
 
-  EFR32_LOG("# %2d %2d  %03d %02X:%02X:%02X:%02X:%02X:%02X  %s", scan_count,
-            scan_result->channel, ((int16_t)(scan_result->rcpi - 220) / 2),
-            scan_result->mac[0], scan_result->mac[1], scan_result->mac[2],
-            scan_result->mac[3], scan_result->mac[4], scan_result->mac[5],
+  EFR32_LOG("# %2d %2d  %03d %02X:%02X:%02X:%02X:%02X:%02X  %s",
+            scan_count,
+            scan_result->channel,
+            ((int16_t)(scan_result->rcpi - 220) / 2),
+            scan_result->mac[0],
+            scan_result->mac[1],
+            scan_result->mac[2],
+            scan_result->mac[3],
+            scan_result->mac[4],
+            scan_result->mac[5],
             scan_result->ssid_def.ssid);
   /*Report one AP information*/
   EFR32_LOG("\r\n");
@@ -331,17 +318,14 @@ sl_wfx_scan_result_callback(sl_wfx_scan_result_ind_body_t *scan_result) {
     if (strcmp(scan_ssid, (char *)&scan_result->ssid_def.ssid[0]) != CMP_SUCCESS)
       return;
   }
-  if ((ap = (struct scan_result_holder *)pvPortMalloc(sizeof(*ap))) ==
-      (struct scan_result_holder *)0) {
+  if ((ap = (struct scan_result_holder *)pvPortMalloc(sizeof(*ap))) == (struct scan_result_holder *)0) {
     EFR32_LOG("*ERR*Scan: No Mem");
   } else {
-    ap->next = scan_save;
+    ap->next  = scan_save;
     scan_save = ap;
     /* Not checking if scan_result->ssid_length is < 33 */
-    memcpy(ap->scan.ssid, scan_result->ssid_def.ssid,
-           scan_result->ssid_def.ssid_length);
-    ap->scan.ssid[scan_result->ssid_def.ssid_length] =
-        0; /* make sure about null terminate */
+    memcpy(ap->scan.ssid, scan_result->ssid_def.ssid, scan_result->ssid_def.ssid_length);
+    ap->scan.ssid[scan_result->ssid_def.ssid_length] = 0; /* make sure about null terminate */
     /* We do it in this order WPA3 first */
     /* No EAP supported - Is this required */
     if (scan_result->security_mode.wpa3) {
@@ -370,7 +354,8 @@ sl_wfx_scan_result_callback(sl_wfx_scan_result_ind_body_t *scan_result) {
  * @return None
  *****************************************************************************/
 /* ARGSUSED */
-static void sl_wfx_scan_complete_callback(uint32_t status) {
+static void sl_wfx_scan_complete_callback(uint32_t status)
+{
   (void)(status);
   /* Use scan_count value and reset it */
   xEventGroupSetBits(sl_wfx_event_group, SL_WFX_SCAN_COMPLETE);
@@ -385,41 +370,45 @@ static void sl_wfx_scan_complete_callback(uint32_t status) {
  * @param[in]  status:
  * @return None
  *****************************************************************************/
-static void sl_wfx_connect_callback(uint8_t *mac, uint32_t status) {
+static void sl_wfx_connect_callback(sl_wfx_connect_ind_body_t connect_indication_body)
+{ //(uint8_t *mac, uint32_t status) {
+  uint8_t *mac    = connect_indication_body.mac;
+  uint32_t status = connect_indication_body.status;
   (void)(mac);
   switch (status) {
-  case WFM_STATUS_SUCCESS: {
-    EFR32_LOG("STA-Connected\r\n");
-      memcpy(&ap_mac.octet[0], mac, MAC_ADDRESS_FIRST_OCTET);
-    sl_wfx_context->state = static_cast<sl_wfx_state_t>(
-        static_cast<int>(sl_wfx_context->state) |
-        static_cast<int>(SL_WFX_STA_INTERFACE_CONNECTED));
-    xEventGroupSetBits(sl_wfx_event_group, SL_WFX_CONNECT);
-    break;
-  }
-  case WFM_STATUS_NO_MATCHING_AP: {
-    EFR32_LOG("WFX Connection failed, access point not found\r\n");
-    break;
-  }
-  case WFM_STATUS_CONNECTION_ABORTED: {
-    EFR32_LOG("WFX Connection aborted\r\n");
-    break;
-  }
-  case WFM_STATUS_CONNECTION_TIMEOUT: {
-    EFR32_LOG("WFX Connection timeout\r\n");
-    break;
-  }
-  case WFM_STATUS_CONNECTION_REJECTED_BY_AP: {
-    EFR32_LOG("WFX Connection rejected by the access point\r\n");
-    break;
-  }
-  case WFM_STATUS_CONNECTION_AUTH_FAILURE: {
-    EFR32_LOG("WFX Connection authentication failure\r\n");
-    break;
-  }
-  default: {
-    EFR32_LOG("WF Connection attempt error\r\n");
-  }
+    case WFM_STATUS_SUCCESS: {
+      EFR32_LOG("STA-Connected\r\n");
+      memcpy(&ap_mac.octet[0], mac, 6);
+      ap_info.security      = wifi_provision.security;
+      ap_info.chan          = connect_indication_body.channel;
+      sl_wfx_context->state = static_cast<sl_wfx_state_t>(static_cast<int>(sl_wfx_context->state)
+                                                          | static_cast<int>(SL_WFX_STA_INTERFACE_CONNECTED));
+      xEventGroupSetBits(sl_wfx_event_group, SL_WFX_CONNECT);
+      break;
+    }
+    case WFM_STATUS_NO_MATCHING_AP: {
+      EFR32_LOG("WFX Connection failed, access point not found\r\n");
+      break;
+    }
+    case WFM_STATUS_CONNECTION_ABORTED: {
+      EFR32_LOG("WFX Connection aborted\r\n");
+      break;
+    }
+    case WFM_STATUS_CONNECTION_TIMEOUT: {
+      EFR32_LOG("WFX Connection timeout\r\n");
+      break;
+    }
+    case WFM_STATUS_CONNECTION_REJECTED_BY_AP: {
+      EFR32_LOG("WFX Connection rejected by the access point\r\n");
+      break;
+    }
+    case WFM_STATUS_CONNECTION_AUTH_FAILURE: {
+      EFR32_LOG("WFX Connection authentication failure\r\n");
+      break;
+    }
+    default: {
+      EFR32_LOG("WF Connection attempt error\r\n");
+    }
   }
 
   if ((status != WFM_STATUS_SUCCESS) && retryJoin < MAX_JOIN_RETRIES_COUNT) {
@@ -427,8 +416,7 @@ static void sl_wfx_connect_callback(uint8_t *mac, uint32_t status) {
     retryInProgress = false;
     EFR32_LOG("WFX Retry to connect to network count: %d", retryJoin);
     sl_wfx_context->state =
-        static_cast<sl_wfx_state_t>(static_cast<int>(sl_wfx_context->state) &
-                                    ~static_cast<int>(SL_WFX_STARTED));
+      static_cast<sl_wfx_state_t>(static_cast<int>(sl_wfx_context->state) & ~static_cast<int>(SL_WFX_STARTED));
     xEventGroupSetBits(sl_wfx_event_group, SL_WFX_RETRY_CONNECT);
   }
 }
@@ -441,12 +429,12 @@ static void sl_wfx_connect_callback(uint8_t *mac, uint32_t status) {
  * @param[in]  reason:
  * @return None
  *****************************************************************************/
-static void sl_wfx_disconnect_callback(uint8_t *mac, uint16_t reason) {
+static void sl_wfx_disconnect_callback(uint8_t *mac, uint16_t reason)
+{
   (void)(mac);
   EFR32_LOG("WFX Disconnected %d\r\n", reason);
-  sl_wfx_context->state = static_cast<sl_wfx_state_t>(
-      static_cast<int>(sl_wfx_context->state) &
-      ~static_cast<int>(SL_WFX_STA_INTERFACE_CONNECTED));
+  sl_wfx_context->state = static_cast<sl_wfx_state_t>(static_cast<int>(sl_wfx_context->state)
+                                                      & ~static_cast<int>(SL_WFX_STA_INTERFACE_CONNECTED));
   xEventGroupSetBits(sl_wfx_event_group, SL_WFX_DISCONNECT);
 }
 
@@ -458,12 +446,14 @@ static void sl_wfx_disconnect_callback(uint8_t *mac, uint16_t reason) {
  * @param[in]  status:
  * @return None
  *****************************************************************************/
-static void sl_wfx_start_ap_callback(uint32_t status) {
-  if (status == AP_START_SUCCESS) {
+
+static void sl_wfx_start_ap_callback(uint32_t status)
+{
+  if (status == 0) {
+>>>>>>> feature_wifi_dig_implementation_wf200
     EFR32_LOG("AP started\r\n");
     sl_wfx_context->state =
-        static_cast<sl_wfx_state_t>(static_cast<int>(sl_wfx_context->state) |
-                                    static_cast<int>(SL_WFX_AP_INTERFACE_UP));
+      static_cast<sl_wfx_state_t>(static_cast<int>(sl_wfx_context->state) | static_cast<int>(SL_WFX_AP_INTERFACE_UP));
     xEventGroupSetBits(sl_wfx_event_group, SL_WFX_START_AP);
   } else {
     EFR32_LOG("AP start failed\r\n");
@@ -478,13 +468,13 @@ static void sl_wfx_start_ap_callback(uint32_t status) {
  * @param[in]  None
  * @return None
  *****************************************************************************/
-static void sl_wfx_stop_ap_callback(void) {
+static void sl_wfx_stop_ap_callback(void)
+{
   // TODO
   // dhcpserver_clear_stored_mac();
   EFR32_LOG("SoftAP stopped\r\n");
   sl_wfx_context->state =
-      static_cast<sl_wfx_state_t>(static_cast<int>(sl_wfx_context->state) &
-                                  ~static_cast<int>(SL_WFX_AP_INTERFACE_UP));
+    static_cast<sl_wfx_state_t>(static_cast<int>(sl_wfx_context->state) & ~static_cast<int>(SL_WFX_AP_INTERFACE_UP));
   xEventGroupSetBits(sl_wfx_event_group, SL_WFX_STOP_AP);
 }
 
@@ -495,9 +485,9 @@ static void sl_wfx_stop_ap_callback(void) {
  * @param[in]  mac:
  * @return None
  *****************************************************************************/
-static void sl_wfx_client_connected_callback(uint8_t *mac) {
-  EFR32_LOG("Client connected, MAC: %02X:%02X:%02X:%02X:%02X:%02X\r\n", mac[0],
-            mac[1], mac[2], mac[3], mac[4], mac[5]);
+static void sl_wfx_client_connected_callback(uint8_t *mac)
+{
+  EFR32_LOG("Client connected, MAC: %02X:%02X:%02X:%02X:%02X:%02X\r\n", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
   // TODO
   EFR32_LOG("Open a web browser and go to http://%d.%d.%d.%d\r\n", ap_ip_addr0, ap_ip_addr1, ap_ip_addr2, ap_ip_addr3);
 }
@@ -510,9 +500,14 @@ static void sl_wfx_client_connected_callback(uint8_t *mac) {
  * @param[in] mac:
  * @return None
  *****************************************************************************/
-static void sl_wfx_ap_client_rejected_callback(uint32_t status, uint8_t *mac) {
+
+static void sl_wfx_ap_client_rejected_callback(uint32_t status, uint8_t *mac)
 {
+  // struct eth_addr mac_addr;
+  // memcpy(&mac_addr, mac, SL_WFX_BSSID_SIZE);
   // TODO
+  // dhcpserver_remove_mac(&mac_addr);
+>>>>>>> feature_wifi_dig_implementation_wf200
   EFR32_LOG("Client rejected, reason: %d, MAC: %02X:%02X:%02X:%02X:%02X:%02X\r\n",
             (int)status,
             mac[0],
@@ -531,8 +526,8 @@ static void sl_wfx_ap_client_rejected_callback(uint32_t status, uint8_t *mac) {
  * @param[in]  mac:
  * @return  None
  *****************************************************************************/
-static void sl_wfx_ap_client_disconnected_callback(uint32_t status,
-                                                   uint8_t *mac) {
+static void sl_wfx_ap_client_disconnected_callback(uint32_t status, uint8_t *mac)
+{
   // TODO
   EFR32_LOG("Client disconnected, reason: %d, MAC: %02X:%02X:%02X:%02X:%02X:%02X\r\n",
             (int)status,
@@ -552,7 +547,8 @@ static void sl_wfx_ap_client_disconnected_callback(uint32_t status,
  * @param[in] farme:
  * @return None
  *****************************************************************************/
-static void sl_wfx_generic_status_callback(sl_wfx_generic_ind_t *frame) {
+static void sl_wfx_generic_status_callback(sl_wfx_generic_ind_t *frame)
+{
   (void)(frame);
   EFR32_LOG("WFX Generic status received\r\n");
 }
@@ -564,26 +560,27 @@ static void sl_wfx_generic_status_callback(sl_wfx_generic_ind_t *frame) {
  * @param[in] p_arg:
  * @return None
  ******************************************************************************/
-static void wfx_events_task(void *p_arg) {
+static void wfx_events_task(void *p_arg)
+{
   TickType_t last_dhcp_poll, now;
   EventBits_t flags;
   (void)p_arg;
 
-  sta_netif = wfx_get_netif(SL_WFX_STA_INTERFACE);
+  sta_netif      = wfx_get_netif(SL_WFX_STA_INTERFACE);
   last_dhcp_poll = xTaskGetTickCount();
   while (true) {
     flags = xEventGroupWaitBits(sl_wfx_event_group,
                                 SL_WFX_CONNECT | SL_WFX_DISCONNECT
 #ifdef SL_WFX_CONFIG_SOFTAP
-                                    | SL_WFX_START_AP | SL_WFX_STOP_AP
+                                  | SL_WFX_START_AP | SL_WFX_STOP_AP
 #endif /* SL_WFX_CONFIG_SOFTAP */
 #ifdef SL_WFX_CONFIG_SCAN
-                                    | SL_WFX_SCAN_START | SL_WFX_SCAN_COMPLETE
+                                  | SL_WFX_SCAN_START | SL_WFX_SCAN_COMPLETE
 #endif /* SL_WFX_CONFIG_SCAN */
-                                  | BITS_TO_WAIT,
+                                  | 0,
                                 pdTRUE,
                                 pdFALSE,
-                                pdMS_TO_TICKS(250)); /* 250 msec delay converted to ticks */
+                                pdMS_TO_TICKS(250));
     if (flags & SL_WFX_RETRY_CONNECT) {
       if (!retryInProgress) {
         EFR32_LOG("WFX sending the connect command");
@@ -610,9 +607,9 @@ static void wfx_events_task(void *p_arg) {
             hasNotifiedIPV4 = false;
         }
 #endif // CHIP_DEVICE_CONFIG_ENABLE_IPV4
-        if ((ip6_addr_ispreferred(netif_ip6_addr_state(sta_netif, 0))) &&
-            !hasNotifiedIPV6) {
-          wfx_ipv6_notify(GET_IPV6_SUCCESS);
+
+        if ((ip6_addr_ispreferred(netif_ip6_addr_state(sta_netif, 0))) && !hasNotifiedIPV6) {
+          wfx_ipv6_notify(1);
           hasNotifiedIPV6 = true;
           if (!hasNotifiedWifiConnectivity) {
             wfx_connected_notify(CONNECTION_STATUS_SUCCESS, &ap_mac);
@@ -628,8 +625,9 @@ static void wfx_events_task(void *p_arg) {
       wfx_ip_changed_notify (IP_STATUS_FAIL);
       hasNotifiedIPV4 = false;
 #endif // CHIP_DEVICE_CONFIG_ENABLE_IPV4
-      wfx_ipv6_notify (GET_IPV6_FAIL);
-      hasNotifiedIPV6 = false;
+
+      wfx_ipv6_notify(0);
+      hasNotifiedIPV6             = false;
       hasNotifiedWifiConnectivity = false;
       EFR32_LOG("WIFI: Connected to AP");
       wifi_extra |= WE_ST_STA_CONN;
@@ -649,8 +647,8 @@ static void wfx_events_task(void *p_arg) {
       wfx_ip_changed_notify (IP_STATUS_FAIL);
       hasNotifiedIPV4 = false;
 #endif // CHIP_DEVICE_CONFIG_ENABLE_IPV4
-      wfx_ipv6_notify(GET_IPV6_FAIL);
-      hasNotifiedIPV6 = false;
+      wfx_ipv6_notify(0);
+      hasNotifiedIPV6             = false;
       hasNotifiedWifiConnectivity = false;
       wifi_extra &= ~WE_ST_STA_CONN;
       wfx_lwip_set_sta_link_down();
@@ -668,26 +666,27 @@ static void wfx_events_task(void *p_arg) {
         slen = strlen(scan_ssid);
         memcpy(&ssid.ssid[0], scan_ssid, slen);
         ssid.ssid_length = slen;
-        num_ssid = 1;
-        sp = &ssid;
+        num_ssid         = 1;
+        sp               = &ssid;
       } else {
         num_ssid = 0;
-        sp = (sl_wfx_ssid_def_t *)0;
+        sp       = (sl_wfx_ssid_def_t *)0;
       }
 
       EFR32_LOG("WIFI Scan Paramter set to Active channel time %d, Passive "
                 "Channel Time: %d, Number of prob: %d",
-                ACTIVE_CHANNEL_TIME, PASSIVE_CHANNEL_TIME, NUM_PROBE_REQUEST);
-      (void)sl_wfx_set_scan_parameters(ACTIVE_CHANNEL_TIME,
-                                       PASSIVE_CHANNEL_TIME, NUM_PROBE_REQUEST);
+                ACTIVE_CHANNEL_TIME,
+                PASSIVE_CHANNEL_TIME,
+                NUM_PROBE_REQUEST);
+      (void)sl_wfx_set_scan_parameters(ACTIVE_CHANNEL_TIME, PASSIVE_CHANNEL_TIME, NUM_PROBE_REQUEST);
       (void)sl_wfx_send_scan_command(WFM_SCAN_MODE_ACTIVE,
-                                     CHANNEL_LIST, /* Channel list */
-                                     CHANNEL_COUNT,                  /* Scan all chans */
+                                     (const uint8_t *)0, /* Channel list */
+                                     0,                  /* Scan all chans */
                                      sp,
                                      num_ssid,
-                                     IE_DATA, /* IE we're looking for */
-                                     IE_DATA_LENGTH,
-                                     BSSID_SCAN);
+                                     (const uint8_t *)0, /* IE we're looking for */
+                                     0,
+                                     (const uint8_t *)0);
     }
     if (flags & SL_WFX_SCAN_COMPLETE) {
       struct scan_result_holder *hp, *next;
@@ -699,7 +698,7 @@ static void wfx_events_task(void *p_arg) {
         vPortFree(hp);
       }
       (*scan_cb)((wfx_wifi_scan_result *)0);
-      scan_save = (struct scan_result_holder *)0;
+      scan_save  = (struct scan_result_holder *)0;
       scan_count = 0;
       if (scan_ssid) {
         vPortFree(scan_ssid);
@@ -712,13 +711,6 @@ static void wfx_events_task(void *p_arg) {
   }
 }
 
-/****************************************************************************
- * @fn   static sl_status_t wfx_init(void)
- * @brief
- * Initialize the WF200 used by the two interfaces
- * @param[in]  None
- * @return None
- *****************************************************************************/
 static sl_status_t wfx_init(void)
 {
   /* Initialize the WF200 used by the two interfaces */
@@ -726,34 +718,38 @@ static sl_status_t wfx_init(void)
   sl_status_t status = sl_wfx_init(&wifiContext);
   EFR32_LOG("FMAC Driver version    %s", FMAC_DRIVER_VERSION_STRING);
   switch (status) {
-  case SL_STATUS_OK:
-    EFR32_LOG("WF200 FW ver:%d.%d.%d [MAC %02x:%02x:%02x-%02x:%02x:%02x]",
-              wifiContext.firmware_major, wifiContext.firmware_minor,
-              wifiContext.firmware_build, wifiContext.mac_addr_0.octet[0],
-              wifiContext.mac_addr_0.octet[1], wifiContext.mac_addr_0.octet[2],
-              wifiContext.mac_addr_0.octet[3], wifiContext.mac_addr_0.octet[4],
-              wifiContext.mac_addr_0.octet[5]);
-    EFR32_LOG("WF200 Init OK");
+    case SL_STATUS_OK:
+      EFR32_LOG("WF200 FW ver:%d.%d.%d [MAC %02x:%02x:%02x-%02x:%02x:%02x]",
+                wifiContext.firmware_major,
+                wifiContext.firmware_minor,
+                wifiContext.firmware_build,
+                wifiContext.mac_addr_0.octet[0],
+                wifiContext.mac_addr_0.octet[1],
+                wifiContext.mac_addr_0.octet[2],
+                wifiContext.mac_addr_0.octet[3],
+                wifiContext.mac_addr_0.octet[4],
+                wifiContext.mac_addr_0.octet[5]);
+      EFR32_LOG("WF200 Init OK");
 
-    if (wifiContext.state == SL_WFX_STA_INTERFACE_CONNECTED) {
-      sl_wfx_send_disconnect_command();
-    }
+      if (wifiContext.state == SL_WFX_STA_INTERFACE_CONNECTED) {
+        sl_wfx_send_disconnect_command();
+      }
 
-    break;
-  case SL_STATUS_WIFI_INVALID_KEY:
-    EFR32_LOG("*ERR*WF200: F/W keyset invalid");
-    break;
-  case SL_STATUS_WIFI_FIRMWARE_DOWNLOAD_TIMEOUT:
-    EFR32_LOG("*ERR*WF200: F/W download timo");
-    break;
-  case SL_STATUS_TIMEOUT:
-    EFR32_LOG("*ERR*WF200: Poll for value timo");
-    break;
-  case SL_STATUS_FAIL:
-    EFR32_LOG("*ERR*WF200: Error");
-    break;
-  default:
-    EFR32_LOG("*ERR*WF200: Unknown");
+      break;
+    case SL_STATUS_WIFI_INVALID_KEY:
+      EFR32_LOG("*ERR*WF200: F/W keyset invalid");
+      break;
+    case SL_STATUS_WIFI_FIRMWARE_DOWNLOAD_TIMEOUT:
+      EFR32_LOG("*ERR*WF200: F/W download timo");
+      break;
+    case SL_STATUS_TIMEOUT:
+      EFR32_LOG("*ERR*WF200: Poll for value timo");
+      break;
+    case SL_STATUS_FAIL:
+      EFR32_LOG("*ERR*WF200: Error");
+      break;
+    default:
+      EFR32_LOG("*ERR*WF200: Unknown");
   }
 
   return status;
@@ -770,7 +766,8 @@ static sl_status_t wfx_init(void)
  * @return
  *    sl_status_t Shows init succes or error.
  ******************************************************************************/
-static void wfx_wifi_hw_start(void) {
+static void wfx_wifi_hw_start(void)
+{
   sl_status_t status;
 
   if (wifi_extra & WE_ST_HW_STARTED)
@@ -790,49 +787,144 @@ static void wfx_wifi_hw_start(void) {
   }
 }
 
-/************************************************************************
- * @fn   int32_t wfx_get_ap_info(wfx_wifi_scan_result_t *ap)
- * @brief
+/*
  * Get AP info
- * @param[in]  ap: access point
- * @return returns -1
- **************************************************************************/
-int32_t wfx_get_ap_info(wfx_wifi_scan_result_t *ap){
-  /* TODO */
+ */
+int32_t wfx_get_ap_info(wfx_wifi_scan_result_t *ap)
+{
+  uint32_t signal_strength;
+  EFR32_LOG("WIFI:SSID:: %s", &ap_info.ssid[0]);
+  memcpy(ap->ssid, ap_info.ssid, sizeof(ap_info.ssid));
+  EFR32_LOG("WIFI:Mac addr:: %02x:%02x:%02x:%02x:%02x:%02x",
+            ap_info.bssid[0],
+            ap_info.bssid[1],
+            ap_info.bssid[2],
+            ap_info.bssid[3],
+            ap_info.bssid[4],
+            ap_info.bssid[5]);
+  memcpy(ap->bssid, ap_info.bssid, sizeof(ap_info.bssid));
+  ap->security = ap_info.security;
+  EFR32_LOG("WIFI:security:: %d", ap->security);
+  ap->chan = ap_info.chan;
+  EFR32_LOG("WIFI:Channel:: to %d", ap->chan);
+
+  sl_status_t status = sl_wfx_get_signal_strength(&signal_strength);
+
+  if (status == SL_STATUS_OK) {
+    EFR32_LOG("status SL_STATUS_OK & signal_strength:: %d", signal_strength);
+    ap->rssi = (-1) * signal_strength;
+  }
+  return status;
+}
+
+int32_t wfx_get_ap_ext(wfx_wifi_scan_ext_t *extra_info)
+{
+  int32_t status;
+  status = get_all_counters();
+  if (status != SL_STATUS_OK) {
+    EFR32_LOG("Failed to get the couters");
+  } else {
+    extra_info->beacon_lost_count = counters->body.count_miss_beacon;
+    extra_info->beacon_rx_count   = counters->body.count_rx_beacon;
+    extra_info->mcast_rx_count    = counters->body.count_rx_multicast_frames;
+    extra_info->mcast_tx_count    = counters->body.count_tx_multicast_frames;
+    extra_info->ucast_rx_count    = counters->body.count_rx_packets;
+    extra_info->ucast_tx_count    = counters->body.count_tx_packets;
+    //extra_info->overrun_count     = counters->body.overrun_count;
+  }
+  return status;
+}
+
+sl_status_t get_all_counters(void)
+{
+  sl_status_t result;
+  uint8_t command_id        = 0x05;
+  uint16_t mib_id           = 0x2035;
+  sl_wfx_mib_req_t *request = NULL;
+  uint32_t request_length   = SL_WFX_ROUND_UP_EVEN(sizeof(sl_wfx_header_mib_t) + sizeof(sl_wfx_mib_req_body_t));
+
+  result = sl_wfx_allocate_command_buffer((sl_wfx_generic_message_t **)&request,
+                                          command_id,
+                                          SL_WFX_CONTROL_BUFFER,
+                                          request_length);
+
+  request->body.mib_id = mib_id;
+  //request->header.info = (SL_WFX_STA_INTERFACE << SL_WFX_MSG_INFO_INTERFACE_OFFSET) & SL_WFX_MSG_INFO_INTERFACE_MASK;
+  request->header.interface = 0x2;
+  request->header.encrypted = 0x0;
+
+  result = sl_wfx_send_request(command_id, (sl_wfx_generic_message_t *)request, request_length);
+  SL_WFX_ERROR_CHECK(result);
+
+  result = sl_wfx_host_wait_for_confirmation(command_id, SL_WFX_DEFAULT_REQUEST_TIMEOUT_MS, (void **)&counters);
+  SL_WFX_ERROR_CHECK(result);
+
+  printf("%-24s %12s \r\n", "", "Debug Counters Content");
+
+#define PUT_COUNTER(name) printf("%-24s %lu\r\n", #name, (unsigned long)counters->body.count_##name);
+  printf("%-24s %lu\r\n", "rcpi", (unsigned long)counters->body.rcpi);
+  PUT_COUNTER(plcp_errors);
+  PUT_COUNTER(fcs_errors);
+  PUT_COUNTER(tx_packets);
+  PUT_COUNTER(rx_packets);
+  PUT_COUNTER(rx_packet_errors);
+  PUT_COUNTER(rx_decryption_failures);
+  PUT_COUNTER(rx_mic_failures);
+  PUT_COUNTER(rx_no_key_failures);
+  PUT_COUNTER(tx_multicast_frames);
+  PUT_COUNTER(tx_frames_success);
+  PUT_COUNTER(tx_frame_failures);
+  PUT_COUNTER(tx_frames_retried);
+  PUT_COUNTER(tx_frames_multi_retried);
+  PUT_COUNTER(rx_frame_duplicates);
+  PUT_COUNTER(rts_success);
+  PUT_COUNTER(rts_failures);
+  PUT_COUNTER(ack_failures);
+  PUT_COUNTER(rx_multicast_frames);
+  PUT_COUNTER(rx_frames_success);
+  PUT_COUNTER(rx_cmacicv_errors);
+  PUT_COUNTER(rx_cmac_replays);
+  PUT_COUNTER(rx_mgmt_ccmp_replays);
+  PUT_COUNTER(rx_bipmic_errors);
+  PUT_COUNTER(rx_beacon);
+  PUT_COUNTER(miss_beacon);
+
+error_handler:
+  if (result == SL_STATUS_TIMEOUT) {
+    if (sl_wfx_context->used_buffers > 0) {
+      sl_wfx_context->used_buffers--;
+    }
+  }
+  if (request != NULL) {
+    sl_wfx_free_command_buffer((sl_wfx_generic_message_t *)request, command_id, SL_WFX_CONTROL_BUFFER);
+  }
+
+  return result;
+}
+
+int32_t wfx_reset_counts()
+{
+  // int32_t status;
+  // uint8_t buff[28] = { 0 };
+  // status           = rsi_wlan_get(RSI_WLAN_EXT_STATS, buff, sizeof(buff));
+  // if (status != RSI_SUCCESS) {
+  //   WFX_RSI_LOG("\r\n Failed, Error Code : 0x%lX\r\n", status);
+  // } else {
+  //   rsi_wlan_ext_stats_t *test    = (rsi_wlan_ext_stats_t *)buff;
+  //   temp_reset->beacon_lost_count = test->beacon_lost_count;
+  //   temp_reset->beacon_rx_count   = test->beacon_rx_count;
+  //   temp_reset->mcast_rx_count    = test->mcast_rx_count;
+  //   temp_reset->mcast_tx_count    = test->mcast_tx_count;
+  //   temp_reset->ucast_rx_count    = test->ucast_rx_count;
+  //   temp_reset->ucast_tx_count    = test->ucast_tx_count;
+  //   temp_reset->overrun_count     = test->overrun_count;
+  // }
   return -1;
 }
 
-/************************************************************************
- * @fn   int32_t wfx_get_ap_ext(wfx_wifi_scan_ext_t *extra_info)
- * @brief
- * Get AP extra info
- * @param[in]  extra_info: access point extra information
- * @return returns -1
- **************************************************************************/
-int32_t wfx_get_ap_ext(wfx_wifi_scan_ext_t *extra_info){
-  /* TODO */
-  return -1;
-}
-
-/************************************************************************
- * @fn    int32_t wfx_reset_counts()
- * @brief
- *    reset the count
- * @param[in]  None
- * @return returns -1
- **************************************************************************/
-int32_t wfx_reset_counts(){
-  /* TODO */
-  return -1;
-}
-
-/*************************************************************************
- * @fn   sl_status_t wfx_wifi_start(void)
- * @brief
+/*
  * I think that this is getting called before FreeRTOS threads are ready
- * @param[in] none
- * @return  returns SL_STATUS_OK
- **************************************************************************/
+ */
 sl_status_t wfx_wifi_start(void)
 {
   if (wifi_extra & WE_ST_STARTED) {
@@ -853,6 +945,7 @@ sl_status_t wfx_wifi_start(void)
  * @param[in]  None
  * @return returns wificonetext state
  *****************************************************************************/
+
 sl_wfx_state_t wfx_get_wifi_state(void)
 {
   return wifiContext.state;
@@ -865,6 +958,7 @@ sl_wfx_state_t wfx_get_wifi_state(void)
  * @param[in]  interface:
  * @return returns selectedNetif
  *****************************************************************************/
+
 struct netif *wfx_GetNetif(sl_wfx_interface_t interface)
 {
   struct netif *SelectedNetif = NULL;
@@ -889,44 +983,34 @@ struct netif *wfx_GetNetif(sl_wfx_interface_t interface)
  *****************************************************************************/
 sl_wfx_mac_address_t wfx_get_wifi_mac_addr(sl_wfx_interface_t interface)
 {
-  // return Mac address used by WFX SL_WFX_STA_INTERFACE or SL_WFX_SOFTAP_INTERFACE,
+  // return Mac address used by WFX SL_WFX_STA_INTERFACE or
+  // SL_WFX_SOFTAP_INTERFACE,
   return (interface == SL_WFX_STA_INTERFACE) ? wifiContext.mac_addr_0 : wifiContext.mac_addr_1;
 }
 
-/****************************************************************************
- * @fn  void wfx_set_wifi_provision(wfx_wifi_provision_t *wifiConfig)
- * @brief
- * set the wifi provision
- * @param[in] wifiConfig: configuration of wifi
- * @return None
- *****************************************************************************/
 void wfx_set_wifi_provision(wfx_wifi_provision_t *wifiConfig)
 {
   memcpy(wifi_provision.ssid, wifiConfig->ssid, sizeof(wifiConfig->ssid));
-  memcpy(wifi_provision.passkey, wifiConfig->passkey,
-         sizeof(wifiConfig->passkey));
+  memcpy(wifi_provision.passkey, wifiConfig->passkey, sizeof(wifiConfig->passkey));
   EFR32_LOG("WIFI: Provision SSID=%s", &wifi_provision.ssid[0]);
 
   /* Not very good - To be improved */
   switch (wifiConfig->security) {
-  case WFX_SEC_WPA:
-    wifi_provision.security = static_cast<uint8_t>(
-        sl_wfx_security_mode_e::WFM_SECURITY_MODE_WPA2_WPA1_PSK);
-    break;
-  case WFX_SEC_WPA3:
-    wifi_provision.security = WFM_SECURITY_MODE_WPA3_SAE;
-    break;
-  case WFX_SEC_WPA2:
-    wifi_provision.security = static_cast<uint8_t>(
-        sl_wfx_security_mode_e::WFM_SECURITY_MODE_WPA2_WPA1_PSK);
-    break;
-  case WFX_SEC_WPA_WPA2_MIXED:
-    wifi_provision.security = static_cast<uint8_t>(
-        sl_wfx_security_mode_e::WFM_SECURITY_MODE_WPA2_WPA1_PSK);
-    break;
-  default:
-    wifi_provision.security = WFM_SECURITY_MODE_WPA2_PSK;
-    break;
+    case WFX_SEC_WPA:
+      wifi_provision.security = static_cast<uint8_t>(sl_wfx_security_mode_e::WFM_SECURITY_MODE_WPA2_WPA1_PSK);
+      break;
+    case WFX_SEC_WPA3:
+      wifi_provision.security = WFM_SECURITY_MODE_WPA3_SAE;
+      break;
+    case WFX_SEC_WPA2:
+      wifi_provision.security = static_cast<uint8_t>(sl_wfx_security_mode_e::WFM_SECURITY_MODE_WPA2_WPA1_PSK);
+      break;
+    case WFX_SEC_WPA_WPA2_MIXED:
+      wifi_provision.security = static_cast<uint8_t>(sl_wfx_security_mode_e::WFM_SECURITY_MODE_WPA2_WPA1_PSK);
+      break;
+    default:
+      wifi_provision.security = WFM_SECURITY_MODE_WPA2_PSK;
+      break;
   }
 }
 
@@ -988,51 +1072,50 @@ sl_status_t wfx_connect_to_ap(void)
   if (wifi_provision.ssid[0] == 0) {
     return SL_STATUS_NOT_AVAILABLE;
   }
+
   EFR32_LOG("WIFI:JOIN to %s", &wifi_provision.ssid[0]);
 
   EFR32_LOG("WIFI Scan Paramter set to Active channel time %d, Passive Channel "
             "Time: %d, Number of prob: %d",
-            ACTIVE_CHANNEL_TIME, PASSIVE_CHANNEL_TIME, NUM_PROBE_REQUEST);
-  (void)sl_wfx_set_scan_parameters(ACTIVE_CHANNEL_TIME, PASSIVE_CHANNEL_TIME,
-                                   NUM_PROBE_REQUEST);
+            ACTIVE_CHANNEL_TIME,
+            PASSIVE_CHANNEL_TIME,
+            NUM_PROBE_REQUEST);
+  (void)sl_wfx_set_scan_parameters(ACTIVE_CHANNEL_TIME, PASSIVE_CHANNEL_TIME, NUM_PROBE_REQUEST);
   result = sl_wfx_send_join_command((uint8_t *)wifi_provision.ssid,
                                     strlen(wifi_provision.ssid),
                                     NULL,
-                                    CHANNEL_0,
+                                    0,
                                     static_cast<sl_wfx_security_mode_t>(wifi_provision.security),
-                                    PREVENT_ROAMING,
-                                    DISABLE_PMF_MODE,
+                                    1,
+                                    0,
                                     (uint8_t *)wifi_provision.passkey,
                                     strlen(wifi_provision.passkey),
                                     NULL,
-                                    IE_DATA_LENGTH);
+                                    0);
 
   return result;
 }
 
-/****************************************************************************
- * @fn  void wfx_get_wifi_mac_addr(sl_wfx_interface_t interface, sl_wfx_mac_address_t *addr)
- * @brief 
- * get the wifi mac addresss
- * @param[in] interface:
- * @param[in] addr : address
- * @return None
- *****************************************************************************/
 void wfx_get_wifi_mac_addr(sl_wfx_interface_t interface, sl_wfx_mac_address_t *addr)
 {
   sl_wfx_mac_address_t *mac;
 
 #ifdef SL_WFX_CONFIG_SOFTAP
-  mac = (interface == SL_WFX_SOFTAP_INTERFACE) ? &wifiContext.mac_addr_1
-                                               : &wifiContext.mac_addr_0;
+  mac = (interface == SL_WFX_SOFTAP_INTERFACE) ? &wifiContext.mac_addr_1 : &wifiContext.mac_addr_0;
 #else
   mac = &wifiContext.mac_addr_0;
 #endif
   *addr = *mac;
   EFR32_LOG("WLAN:Get WiFi Mac addr %02x:%02x:%02x:%02x:%02x:%02x",
-            mac->octet[0], mac->octet[1], mac->octet[2], mac->octet[3],
-            mac->octet[4], mac->octet[5]);
+            mac->octet[0],
+            mac->octet[1],
+            mac->octet[2],
+            mac->octet[3],
+            mac->octet[4],
+            mac->octet[5]);
+  memcpy(&ap_info.bssid[0], &mac->octet[0], 6);
 }
+
 
 /****************************************************************************
  * @fn  bool wfx_have_ipv4_addr(sl_wfx_interface_t which_if)
@@ -1051,36 +1134,21 @@ bool wfx_have_ipv4_addr(sl_wfx_interface_t which_if)
   }
 }
 
-/****************************************************************************
- * @fn  bool wfx_have_ipv6_addr(sl_wfx_interface_t which_if)
- * @brief 
- *     function called when driver have ipv6 address
- * @param[in]  which_if:
- * @return returns false if sucessful,
- *         true otherwise
- *****************************************************************************/
-bool
-wfx_have_ipv6_addr (sl_wfx_interface_t which_if)
+
+bool wfx_have_ipv6_addr(sl_wfx_interface_t which_if)
 {
-    EFR32_LOG ("%s: started.", __func__);
-    bool status = false;
-    if (which_if == SL_WFX_STA_INTERFACE) {
-        status = wfx_is_sta_connected();
-    } else {
-        status = false; /* TODO */
-    }
-    EFR32_LOG ("%s: status: %d", __func__, status);
-    return status;
+  EFR32_LOG("%s: started.", __func__);
+  bool status = false;
+  if (which_if == SL_WFX_STA_INTERFACE) {
+    status = wfx_is_sta_connected();
+  } else {
+    status = false; /* TODO */
+  }
+  EFR32_LOG("%s: status: %d", __func__, status);
+  return status;
 }
 
-/****************************************************************************
- * @fn   sl_status_t wfx_sta_discon(void)
- * @brief
- * Disconnect station mode from connected AP
- * @param[in]  None
- * @returns Returns SL_STATUS_OK if successful,
- *             SL_STATUS_FAIL otherwise
- *****************************************************************************/
+
 sl_status_t wfx_sta_discon(void)
 {
   EFR32_LOG("STA-Disconnecting");
@@ -1090,26 +1158,11 @@ sl_status_t wfx_sta_discon(void)
   return status;
 }
 
-/****************************************************************************
- * @fn  bool wfx_is_sta_mode_enabled(void)
- * @brief 
- *     enable the STA mode
- * @param[in]  None
- * @return returns true
- *****************************************************************************/
 bool wfx_is_sta_mode_enabled(void)
 {
   return true; /* It always is */
 }
 
-/****************************************************************************
- * @fn  bool wfx_is_sta_connected(void)
- * @brief 
- *     fuction called when driver is STA connected
- * @param[in]  None
- * @return returns true if sucessful,
- *         false otherwise
- *****************************************************************************/
 bool wfx_is_sta_connected(void)
 {
   bool val;
@@ -1121,27 +1174,12 @@ bool wfx_is_sta_connected(void)
   return val;
 }
 
-/****************************************************************************
- * @fn  void wfx_setup_ip6_link_local(sl_wfx_interface_t whichif)
- * @brief 
- *      It is automatically done when lwip link up
- * @param[in]  None
- * @return returns true if sucessful,
- *         false otherwise
- *****************************************************************************/
 void wfx_setup_ip6_link_local(sl_wfx_interface_t whichif)
 {
   EFR32_LOG("Setup-IP6: TODO"); /* It is automatically done when lwip link up */
 }
 
-/****************************************************************************
- * @fn  wifi_mode_t wfx_get_wifi_mode()
- * @brief 
- *      get the wifi mode
- * @param[in]  None
- * @return returns WIFI_MODE_NULL if sucessful,
- *         WIFI_MODE_STA otherwise
- *****************************************************************************/
+
 wifi_mode_t wfx_get_wifi_mode()
 {
   if (wifiContext.state & SL_WFX_STARTED)
@@ -1154,22 +1192,14 @@ wifi_mode_t wfx_get_wifi_mode()
  * @brief
  * This is called from the context of AppTask
  * For WF200 - Start WIFI here
- * @param[in]  None
- * @return returns true if sucessful,
- *         false otherwise
- ******************************************************************************/
+
+ */
 bool wfx_hw_ready(void)
 {
   return (wifiContext.state & SL_WFX_STARTED) ? true : false;
 }
 
-/*****************************************************************************
- * @fn  void wfx_dhcp_got_ipv4(uint32_t ip)
- * @brief
- *    function called when dhcp got ipv4
- * @param[in]  ip : internet protocol
- *@return  None
- ******************************************************************************/
+
 void wfx_dhcp_got_ipv4(uint32_t ip)
 {
   /* Acquire the new IP address
@@ -1220,13 +1250,7 @@ bool wfx_start_scan(char *ssid, void (*callback)(wfx_wifi_scan_result_t *))
   return true;
 }
 
-/****************************************************************************
- * @fn  void wfx_cancel_scan(void)
- * @brief
- * driver scan cancelation
- * @param[in]  None
- * @return None
- *****************************************************************************/
+
 void wfx_cancel_scan(void)
 {
   struct scan_result_holder *hp, *next;
@@ -1239,7 +1263,7 @@ void wfx_cancel_scan(void)
     next = hp->next;
     vPortFree(hp);
   }
-  scan_save = (struct scan_result_holder *)0;
+  scan_save  = (struct scan_result_holder *)0;
   scan_count = 0;
   if (scan_ssid) {
     vPortFree(scan_ssid);
