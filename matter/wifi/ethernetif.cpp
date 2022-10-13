@@ -51,7 +51,6 @@ void efr32Log(const char *aFormat, ...);
 #endif
 
 StaticSemaphore_t xEthernetIfSemaBuffer;
-
 /*****************************************************************************
  * Defines
  ******************************************************************************/
@@ -180,6 +179,7 @@ static err_t low_level_output(struct netif *netif, struct pbuf *p)
   // 12 is size of other data in buffer struct, user shouldn't have to care about this?
   if (sl_wfx_host_allocate_buffer((void **)&tx_buffer, SL_WFX_TX_FRAME_BUFFER, asize) != SL_STATUS_OK) {
     EFR32_LOG("*ERR*EN-Out: No mem frame len=%d", framelength);
+         overrun_count++;
     return ERR_MEM;
   }
   buffer = tx_buffer->body.packet_data;
@@ -189,6 +189,8 @@ static err_t low_level_output(struct netif *netif, struct pbuf *p)
     memcpy((uint8_t *)((uint8_t *)buffer + bufferoffset), (uint8_t *)((uint8_t *)q->payload), q->len);
     bufferoffset += q->len;
   }
+
+
   /* No requirement to do this - but we should for security */
   if (padding) {
     memset(buffer + bufferoffset, 0, padding);
@@ -206,6 +208,7 @@ static err_t low_level_output(struct netif *netif, struct pbuf *p)
   while ((result != SL_STATUS_OK) && (i++ < 10)) {
     result = sl_wfx_send_ethernet_frame(tx_buffer, framelength, SL_WFX_STA_INTERFACE, PRIORITY_0);
   }
+
   sl_wfx_host_free_buffer(tx_buffer, SL_WFX_TX_FRAME_BUFFER);
 
   if (result != SL_STATUS_OK) {

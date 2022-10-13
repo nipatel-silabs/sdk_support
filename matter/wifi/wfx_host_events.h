@@ -325,6 +325,9 @@ int32_t wfx_get_ap_info(wfx_wifi_scan_result_t *ap);
 int32_t wfx_get_ap_ext(wfx_wifi_scan_ext_t *extra_info);
 int32_t wfx_reset_counts();
 
+
+static uint8_t overrun_count=0;
+
 void wfx_clear_wifi_provision(void);
 sl_status_t wfx_connect_to_ap(void);
 void wfx_setup_ip6_link_local(sl_wfx_interface_t);

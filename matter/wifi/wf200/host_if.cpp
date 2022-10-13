@@ -86,7 +86,7 @@ TaskHandle_t wfx_events_task_handle;
 static sl_wfx_mac_address_t ap_mac;
 static uint32_t sta_ip;
 static wfx_wifi_scan_result_t ap_info;
-
+// static uint8_t overrun_count=0;
 // Set Scan Parameters
 #define ACTIVE_CHANNEL_TIME  110
 #define PASSIVE_CHANNEL_TIME 0
@@ -450,7 +450,6 @@ static void sl_wfx_disconnect_callback(uint8_t *mac, uint16_t reason)
 static void sl_wfx_start_ap_callback(uint32_t status)
 {
   if (status == 0) {
->>>>>>> feature_wifi_dig_implementation_wf200
     EFR32_LOG("AP started\r\n");
     sl_wfx_context->state =
       static_cast<sl_wfx_state_t>(static_cast<int>(sl_wfx_context->state) | static_cast<int>(SL_WFX_AP_INTERFACE_UP));
@@ -507,7 +506,6 @@ static void sl_wfx_ap_client_rejected_callback(uint32_t status, uint8_t *mac)
   // memcpy(&mac_addr, mac, SL_WFX_BSSID_SIZE);
   // TODO
   // dhcpserver_remove_mac(&mac_addr);
->>>>>>> feature_wifi_dig_implementation_wf200
   EFR32_LOG("Client rejected, reason: %d, MAC: %02X:%02X:%02X:%02X:%02X:%02X\r\n",
             (int)status,
             mac[0],
@@ -792,7 +790,7 @@ static void wfx_wifi_hw_start(void)
  */
 int32_t wfx_get_ap_info(wfx_wifi_scan_result_t *ap)
 {
-  uint32_t signal_strength;
+  int32_t signal_strength;
   EFR32_LOG("WIFI:SSID:: %s", &ap_info.ssid[0]);
   memcpy(ap->ssid, ap_info.ssid, sizeof(ap_info.ssid));
   EFR32_LOG("WIFI:Mac addr:: %02x:%02x:%02x:%02x:%02x:%02x",
@@ -808,11 +806,12 @@ int32_t wfx_get_ap_info(wfx_wifi_scan_result_t *ap)
   ap->chan = ap_info.chan;
   EFR32_LOG("WIFI:Channel:: to %d", ap->chan);
 
-  sl_status_t status = sl_wfx_get_signal_strength(&signal_strength);
+  sl_status_t status = sl_wfx_get_signal_strength((uint32_t*)&signal_strength);
 
   if (status == SL_STATUS_OK) {
     EFR32_LOG("status SL_STATUS_OK & signal_strength:: %d", signal_strength);
-    ap->rssi = (-1) * signal_strength;
+    ap->rssi = (signal_strength - 220)/2;
+    
   }
   return status;
 }
@@ -830,13 +829,14 @@ int32_t wfx_get_ap_ext(wfx_wifi_scan_ext_t *extra_info)
     extra_info->mcast_tx_count    = counters->body.count_tx_multicast_frames;
     extra_info->ucast_rx_count    = counters->body.count_rx_packets;
     extra_info->ucast_tx_count    = counters->body.count_tx_packets;
-    //extra_info->overrun_count     = counters->body.overrun_count;
+    extra_info->overrun_count     = overrun_count;
   }
   return status;
 }
 
 sl_status_t get_all_counters(void)
 {
+  uint8_t flag=0;
   sl_status_t result;
   uint8_t command_id        = 0x05;
   uint16_t mib_id           = 0x2035;
@@ -847,6 +847,11 @@ sl_status_t get_all_counters(void)
                                           command_id,
                                           SL_WFX_CONTROL_BUFFER,
                                           request_length);
+
+                                          if(request == NULL)
+                                          {
+                                            flag=1;
+                                          }
 
   request->body.mib_id = mib_id;
   //request->header.info = (SL_WFX_STA_INTERFACE << SL_WFX_MSG_INFO_INTERFACE_OFFSET) & SL_WFX_MSG_INFO_INTERFACE_MASK;
@@ -889,7 +894,13 @@ sl_status_t get_all_counters(void)
   PUT_COUNTER(rx_beacon);
   PUT_COUNTER(miss_beacon);
 
+
 error_handler:
+    if(flag==1)
+    {
+      overrun_count++;
+    }
+
   if (result == SL_STATUS_TIMEOUT) {
     if (sl_wfx_context->used_buffers > 0) {
       sl_wfx_context->used_buffers--;
